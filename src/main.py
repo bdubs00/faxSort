@@ -112,14 +112,13 @@ async def process_new_faxes(poller):
             response = await client.get(
                 f"{poller.base_url}/incomingFaxes",
                 params={
-                    "timeFrom": now - int(os.getenv("POLLING_RATE", "60")), # default to 60 if env field isn't set
+                    "timeFrom": now - int(os.getenv("POLLING_RATE", "60")), # default to 60 if env var isn't set
                     "timeTo": now,
                     "toNumber": poller.to_number
                 },
                 auth=(poller.access_key, poller.secret_key)
             )
             response.raise_for_status()
-
             response_data = response.json()
             faxes = response_data.get('data', {}).get('incomingFaxes', [])
 
