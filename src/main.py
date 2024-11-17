@@ -6,6 +6,9 @@ from datetime import datetime
 import logging
 import os
 from dotenv import load_dotenv
+from processor.ocr import process_tiff
+from processor.classifier import classify_text
+from processor.email_router import O365EmailRouter
 
 # Load environment variables
 load_dotenv()
@@ -17,10 +20,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize FastAPI app
+# Initialize FastAPI
 app = FastAPI(
-    title="Fax Processing Service",
-    description="Service for processing faxes from HumbleFax"
+    title="Fax Categorization",
+    description="Service for categorizing faxes from HumbleFax"
 )
 
 # Add CORS middleware
@@ -32,17 +35,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+email_router = O365EmailRouter()
 
 class FaxPoller:
     def __init__(self):
         self.access_key = os.getenv("HUMBLE_FAX_ACCESS_KEY")
         self.secret_key = os.getenv("HUMBLE_FAX_SECRET_KEY")
+        self.to_number = int(os.getenv("FAX_TO_NUMBER"))
 
-        if not self.access_key or not self.secret_key:
-            raise ValueError("HUMBLE_FAX_ACCESS_KEY and HUMBLE_FAX_SECRET_KEY must be set in environment variables")
+        if not self.access_key or not self.secret_key or not self.to_number:
+            raise ValueError("HUMBLE_FAX_ACCESS_KEY, HUMBLE_FAX_SECRET_KEY and FAX_TO_NUMBER must be set in environment variables")
 
         self.base_url = "https://api.humblefax.com"
-        self.to_number = 17064804185 # UDSCC's fax number (maybe store in the .env file)
         self.last_poll_time = int(datetime.now().timestamp())
 
     async def poll_for_faxes(self):
@@ -62,39 +66,45 @@ class FaxPoller:
                 )
                 response.raise_for_status()
 
-                # First convert response to JSON
                 response_data = response.json()
-
-                # Update last poll time only after successful request
                 self.last_poll_time = now
-
-                # Return the incomingFaxes array from the nested data structure
                 return response_data.get('data', {}).get('incomingFaxes', [])
 
         except Exception as e:
             logger.error(f"Error polling HumbleFax API: {str(e)}")
             return []
 
-    async def download_fax(self, fax_id: str):
-        """Download a specific fax as PDF"""
+    async def download_fax(self, fax_id: str, file_format: str = "tiff"):
+        """Download a specific fax as TIFF or PDF"""
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     f"{self.base_url}/incomingFax/{fax_id}/download",
-                    params={"fileFormat": "pdf"},
+                    params={"fileFormat": file_format},
                     auth=(self.access_key, self.secret_key)
                 )
                 response.raise_for_status()
-                logger.info(f"Fax {fax_id} Downloaded")
+                logger.info(f"Fax {fax_id} Downloaded as {file_format}")
                 return response.content
         except Exception as e:
             logger.error(f"Error downloading fax {fax_id}: {str(e)}")
             raise
 
 
-async def check_for_new_faxes(poller):
-    """Check for new faxes and download them"""
+async def process_new_faxes(poller):
+    """Check for new faxes, download them, and process them"""
     try:
+        # Initialize email router
+        email_router = O365EmailRouter()
+
+        # Load sender mappings from environment variables
+        sender_mappings = {}
+        mappings_str = os.getenv("SENDER_MAPPINGS", "")
+        if mappings_str:
+            for mapping in mappings_str.split(","):
+                sender, doc_type = mapping.split(":")
+                sender_mappings[sender.strip()] = doc_type.strip()
+
         now = int(datetime.now().timestamp())
         logger.info(f"Polling for new faxes at {now}")
 
@@ -102,7 +112,7 @@ async def check_for_new_faxes(poller):
             response = await client.get(
                 f"{poller.base_url}/incomingFaxes",
                 params={
-                    "timeFrom": now - 60,  # Look back 1 minute
+                    "timeFrom": now - 300,
                     "timeTo": now,
                     "toNumber": poller.to_number
                 },
@@ -111,30 +121,81 @@ async def check_for_new_faxes(poller):
             response.raise_for_status()
 
             response_data = response.json()
-            # Access the nested incomingFaxes array
             faxes = response_data.get('data', {}).get('incomingFaxes', [])
 
             if faxes:
                 logger.info(f"Found {len(faxes)} new faxes")
                 for fax in faxes:
                     fax_id = fax['id']
-                    # Convert timestamp from string to int if needed
+                    from_name = fax.get('fromNameAddressBook', '')
                     timestamp = int(fax['time']) if isinstance(fax['time'], str) else fax['time']
                     formatted_time = datetime.fromtimestamp(timestamp).strftime('%Y%m%d_%H%M%S')
-                    filename = f"downloads/fax_{formatted_time}_{fax_id}.pdf"
 
-                    if not os.path.exists(filename):
-                        logger.info(f"Downloading new fax {fax_id}")
-                        content = await poller.download_fax(fax_id)
-                        with open(filename, 'wb') as f:
+                    pdf_filename = f"tmp/fax_{formatted_time}_{fax_id}.pdf"
+
+                    # Check if we have a known sender mapping
+                    if from_name in sender_mappings:
+                        # For known senders, just get PDF
+                        content = await poller.download_fax(fax_id, "pdf")
+
+                        with open(pdf_filename, 'wb') as f:
                             f.write(content)
-                        logger.info(f"Successfully saved {filename}")
+                        logger.info(f"Successfully saved {pdf_filename}")
+
+                        doc_type = sender_mappings[from_name]
+                        logger.info(f"Direct classification from sender mapping: {doc_type}")
+                        result = {
+                            'classification': {
+                                'document_type': doc_type
+                            }
+                        }
+                    else:
+                        try:
+                            # Download both formats
+                            tiff_content = await poller.download_fax(fax_id, "tiff")
+                            pdf_content = await poller.download_fax(fax_id, "pdf")
+
+                            # Save PDF
+                            with open(pdf_filename, 'wb') as f:
+                                f.write(pdf_content)
+                            logger.info(f"Successfully saved {pdf_filename}")
+
+                            # Process TIFF directly with OCR
+                            ocr_text = await process_tiff(tiff_content)
+
+                            # Get classification
+                            classification_result = await classify_text(ocr_text)
+
+                            result = {
+                                'classification': classification_result
+                            }
+                            logger.info(f"Successfully processed fax {fax_id}")
+
+                        except Exception as e:
+                            logger.error(f"Error processing fax {fax_id}: {str(e)}")
+                            continue
+
+                    logger.info(
+                        f"Classification result: {result.get('classification', {}).get('document_type', 'Unknown')}")
+
+                    # Send email based on classification
+                    if result.get('classification'):
+                        doc_type = result['classification'].get('document_type')
+                        email_sent = await email_router.send_fax_email(
+                            document_type=doc_type,
+                            pdf_path=pdf_filename,
+                            fax_metadata=fax
+                        )
+                        if email_sent:
+                            logger.info(f"Email sent successfully for fax {fax_id} ({doc_type})")
+                        else:
+                            logger.error(f"Failed to send email for fax {fax_id} ({doc_type})")
+
             else:
                 logger.info("No new faxes found")
 
     except Exception as e:
         logger.error(f"Error checking for new faxes: {str(e)}")
-
 
 async def polling_task():
     """Background task that polls for new faxes"""
@@ -142,12 +203,12 @@ async def polling_task():
 
     # Do initial poll immediately
     logger.info("Performing initial poll for faxes...")
-    await check_for_new_faxes(poller)
+    await process_new_faxes(poller)
 
     # Now start the regular polling
     while True:
         await asyncio.sleep(60)  # Wait for 60 seconds between polls
-        await check_for_new_faxes(poller)
+        await process_new_faxes(poller)
 
 
 @app.get("/health")
@@ -163,8 +224,8 @@ async def health_check():
 async def startup_event():
     """Start the polling task when the app starts"""
     logger.info("Starting fax polling service")
-    # Create downloads directory if it doesn't exist
-    os.makedirs("downloads", exist_ok=True)
+    # Create tmp directory if it doesn't exist
+    os.makedirs("tmp", exist_ok=True)
     asyncio.create_task(polling_task())
 
 
@@ -172,11 +233,4 @@ if __name__ == "__main__":
     import uvicorn
 
     port = int(os.getenv("PORT", 8000))
-
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=port,
-        reload=True,
-        log_level="info"
-    )
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True, log_level="info")
