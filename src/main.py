@@ -112,7 +112,7 @@ async def process_new_faxes(poller):
             response = await client.get(
                 f"{poller.base_url}/incomingFaxes",
                 params={
-                    "timeFrom": now - int(os.getenv("POLLING_RATE", "60")), # if not defined in the env file, default to 60
+                    "timeFrom": now - int(os.getenv("POLLING_RATE", "60")), # default to 60 if env field isn't set
                     "timeTo": now,
                     "toNumber": poller.to_number
                 },
@@ -133,63 +133,103 @@ async def process_new_faxes(poller):
 
                     pdf_filename = f"tmp/fax_{formatted_time}_{fax_id}.pdf"
 
-                    # Check if we have a known sender mapping
-                    if from_name in sender_mappings:
-                        # For known senders, just get PDF
-                        content = await poller.download_fax(fax_id, "pdf")
+                    try:
+                        # Check if we have a known sender mapping
+                        if from_name in sender_mappings:
+                            # For known senders, just get PDF
+                            content = await poller.download_fax(fax_id, "pdf")
 
-                        with open(pdf_filename, 'wb') as f:
-                            f.write(content)
-                        logger.info(f"Successfully saved {pdf_filename}")
-
-                        doc_type = sender_mappings[from_name]
-                        logger.info(f"Direct classification from sender mapping: {doc_type}")
-                        result = {
-                            'classification': {
-                                'document_type': doc_type
-                            }
-                        }
-                    else:
-                        try:
-                            # Download both formats
-                            tiff_content = await poller.download_fax(fax_id, "tiff")
-                            pdf_content = await poller.download_fax(fax_id, "pdf")
-
-                            # Save PDF
                             with open(pdf_filename, 'wb') as f:
-                                f.write(pdf_content)
+                                f.write(content)
                             logger.info(f"Successfully saved {pdf_filename}")
 
-                            # Process TIFF directly with OCR
-                            ocr_text = await process_tiff(tiff_content)
-
-                            # Get classification
-                            classification_result = await classify_text(ocr_text)
-
+                            doc_type = sender_mappings[from_name]
+                            logger.info(f"Direct classification from sender mapping: {doc_type}")
                             result = {
-                                'classification': classification_result
+                                'classification': {
+                                    'document_type': doc_type
+                                }
                             }
-                            logger.info(f"Successfully processed fax {fax_id}")
-
-                        except Exception as e:
-                            logger.error(f"Error processing fax {fax_id}: {str(e)}")
-                            continue
-
-                    logger.info(
-                        f"Classification result: {result.get('classification', {}).get('document_type', 'Unknown')}")
-
-                    # Send email based on classification
-                    if result.get('classification'):
-                        doc_type = result['classification'].get('document_type')
-                        email_sent = await email_router.send_fax_email(
-                            document_type=doc_type,
-                            pdf_path=pdf_filename,
-                            fax_metadata=fax
-                        )
-                        if email_sent:
-                            logger.info(f"Email sent successfully for fax {fax_id} ({doc_type})")
                         else:
-                            logger.error(f"Failed to send email for fax {fax_id} ({doc_type})")
+                            # Download both formats
+                            try:
+                                tiff_content = await poller.download_fax(fax_id, "tiff")
+                                pdf_content = await poller.download_fax(fax_id, "pdf")
+
+                                # Save PDF
+                                with open(pdf_filename, 'wb') as f:
+                                    f.write(pdf_content)
+                                logger.info(f"Successfully saved {pdf_filename}")
+
+                                try:
+                                    # Process TIFF directly with OCR
+                                    ocr_text = await process_tiff(tiff_content)
+
+                                    try:
+                                        # Get classification
+                                        classification_result = await classify_text(ocr_text)
+                                        result = {
+                                            'classification': classification_result
+                                        }
+                                        logger.info(f"Successfully processed fax {fax_id}")
+                                    except Exception as e:
+                                        # return as Unknown in the event of failure
+                                        logger.error(f"Classification failed for fax {fax_id}: {str(e)}")
+                                        result = {
+                                            'classification': {
+                                                'document_type': 'Unknown'
+                                            }
+                                        }
+                                except Exception as e:
+                                    # return as Unknown in the event of failure
+                                    logger.error(f"OCR failed for fax {fax_id}: {str(e)}")
+                                    result = {
+                                        'classification': {
+                                            'document_type': 'Unknown'
+                                        }
+                                    }
+                            except Exception as e:
+                                # return as Unknown in the event of failure
+                                logger.error(f"Failed to download fax {fax_id}: {str(e)}")
+                                result = {
+                                    'classification': {
+                                        'document_type': 'Unknown'
+                                    }
+                                }
+
+                        logger.info(
+                            f"Classification result: {result.get('classification', {}).get('document_type', 'Unknown')}")
+
+                        # Send email based on classification
+                        if result.get('classification'):
+                            doc_type = result['classification'].get('document_type')
+                            email_sent = await email_router.send_fax_email(
+                                document_type=doc_type,
+                                pdf_path=pdf_filename,
+                                fax_metadata=fax
+                            )
+                            if email_sent:
+                                logger.info(f"Email sent successfully for fax {fax_id} ({doc_type})")
+                            else:
+                                logger.error(f"Failed to send email for fax {fax_id} ({doc_type})")
+
+                    except Exception as e:
+                        logger.error(f"Error processing fax {fax_id}: {str(e)}")
+                        # Try to send as Unknown even if processing failed
+                        try:
+                            email_sent = await email_router.send_fax_email(
+                                document_type="Unknown",
+                                pdf_path=pdf_filename,
+                                fax_metadata=fax
+                            )
+                            if email_sent:
+                                logger.info(f"Email sent successfully for fax {fax_id} (Unknown - after error)")
+                            else:
+                                logger.error(f"Failed to send email for fax {fax_id} (Unknown - after error)")
+                        except Exception as email_error:
+                            logger.error(
+                                f"Failed to send Unknown classification email for fax {fax_id}: {str(email_error)}")
+                        continue
 
             else:
                 logger.info("No new faxes found")
