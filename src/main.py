@@ -112,7 +112,7 @@ async def process_new_faxes(poller):
             response = await client.get(
                 f"{poller.base_url}/incomingFaxes",
                 params={
-                    "timeFrom": now - 300,
+                    "timeFrom": now - int(os.getenv("POLLING_RATE", "60")), # if not defined in the env file, default to 60
                     "timeTo": now,
                     "toNumber": poller.to_number
                 },
@@ -207,7 +207,7 @@ async def polling_task():
 
     # Now start the regular polling
     while True:
-        await asyncio.sleep(60)  # Wait for 60 seconds between polls
+        await asyncio.sleep(int(os.getenv("POLLING_RATE", "60")))  # Wait for POLLING_RATE, or 60 if not defined
         await process_new_faxes(poller)
 
 
