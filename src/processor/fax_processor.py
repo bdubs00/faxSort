@@ -147,7 +147,7 @@ class FaxProcessor:
     async def _send_email(self, fax_id: str, result: Dict, pdf_filename: str, fax_metadata: Dict):
         """Send email with classification result and cleanup PDF after success"""
         try:
-            doc_type = result['classification'].get('document_type', 'Unknown')
+            doc_type = result['classification'].get('document_type', 'Uncategorized')
             email_sent = await self.email_router.send_fax_email(
                 document_type=doc_type,
                 pdf_path=pdf_filename,
@@ -163,10 +163,10 @@ class FaxProcessor:
             logger.error(f"Error sending email for fax {fax_id}: {str(e)}")
 
     async def _handle_processing_failure(self, fax_id: str, pdf_filename: str, fax_metadata: Dict):
-        """Handle any processing failures by sending as Unknown and cleaning up"""
+        """Handle any processing failures by sending as Uncategorized and cleaning up"""
         try:
             email_sent = await self.email_router.send_fax_email(
-                document_type="Unknown",
+                document_type="Uncategorized",
                 pdf_path=pdf_filename,
                 fax_metadata=fax_metadata
             )
