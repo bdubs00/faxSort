@@ -1,3 +1,4 @@
+# classifier.py
 import anthropic
 import logging
 import os
@@ -8,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 async def classify_text(text: str) -> Dict[str, Any]:
     """
-    Classify the OCR text using Anthropic API
+    Classify the OCR text using Anthropic API with keyword awareness
 
     Args:
         text: OCR text to classify
@@ -23,12 +24,8 @@ async def classify_text(text: str) -> Dict[str, Any]:
 
         # Get all configuration from environment variables
         categories = os.getenv("CLASSIFICATION_CATEGORIES", "").split(",")
-        default_response = os.getenv("DEFAULT_RESPONSE", "Unknown")
-        prompt_intro = os.getenv("PROMPT_INTRO",
-            "Based on the provided text, classify the associated document by selecting only one of the following categories")
-        prompt_instructions = os.getenv("PROMPT_INSTRUCTIONS",
-            "Your response should be the exact name of the classification from the list above, and nothing more. " +
-            "Do not include any explanations or additional text.")
+        default_response = os.getenv("DEFAULT_RESPONSE", "Uncategorized")
+        keyword_rules = os.getenv("KEYWORD_RULES", "").split(",")
 
         if not categories:
             raise ValueError("CLASSIFICATION_CATEGORIES must be set in environment variables")
@@ -36,14 +33,23 @@ async def classify_text(text: str) -> Dict[str, Any]:
         # Build category bullets
         category_bullets = "\n".join(f"•  {category}" for category in categories)
 
-        # Prompt
-        prompt = f"""
-        {prompt_intro}
+        # Build keyword rules
+        keyword_instructions = "\n".join(f"•  {rule}" for rule in keyword_rules)
 
+        # prompt with keyword rules
+        prompt = f"""
+        {os.getenv("PROMPT_INTRO", "Based on the provided text, classify the associated document by selecting only one of the following categories")}
+
+        Categories:
         {category_bullets}
 
-        {prompt_instructions}
-        If none of the above classifications match, simply return "{default_response}".
+        Pay special attention to these keyword rules:
+        {keyword_instructions}
+
+        {os.getenv("PROMPT_INSTRUCTIONS", "Your response should be the exact name of the classification from the list above, and nothing more. Do not include any explanations or additional text.")}
+
+        If none of the above classifications match, return "{default_response}".
+
         Document text:
         {text[:2000]}  # Limiting text length for API
         """
@@ -58,7 +64,6 @@ async def classify_text(text: str) -> Dict[str, Any]:
             }]
         )
 
-        # Create a simple classification dictionary with the response
         classification = {
             "document_type": message.content[0].text.strip()
         }
