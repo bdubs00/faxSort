@@ -53,7 +53,7 @@ async def classify_text(text: str) -> Dict[str, Any]:
         If none of the above classifications match, return "{default_response}".
 
         Document text:
-        {text[:2000]}  # Limiting text length for API
+        {text[:4000]}  # Limiting text length for API (2000 for high accuracy, 4000 for extreme accuracy)
         """
 
         logger.info("Sending text to Anthropic API for classification")
