@@ -26,6 +26,7 @@ async def classify_text(text: str) -> Dict[str, Any]:
         categories = os.getenv("CLASSIFICATION_CATEGORIES", "").split(",")
         default_response = os.getenv("DEFAULT_RESPONSE", "Uncategorized")
         keyword_rules = os.getenv("KEYWORD_RULES", "").split(",")
+        keyword_rules_additional = os.getenv("KEYWORD_RULES_ADDITIONAL", "").split(",")
 
         if not categories:
             raise ValueError("CLASSIFICATION_CATEGORIES must be set in environment variables")
@@ -42,11 +43,12 @@ async def classify_text(text: str) -> Dict[str, Any]:
 
         Categories:
         {category_bullets}
+        
+        {os.getenv("PROMPT_INSTRUCTIONS", "Your response should be the exact name of the classification from the list above, and nothing more. Do not include any explanations or additional text.")}
 
         Pay special attention to these keyword rules:
         {keyword_instructions}
-
-        {os.getenv("PROMPT_INSTRUCTIONS", "Your response should be the exact name of the classification from the list above, and nothing more. Do not include any explanations or additional text.")}
+        {keyword_rules_additional}
 
         If none of the above classifications match, return "{default_response}".
 
