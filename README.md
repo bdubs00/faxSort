@@ -230,12 +230,6 @@ FaxSort was built for internal use and is now open sourced to help others solve 
 
 MIT License - see [LICENSE](LICENSE) file for details.
 
-## 🙏 Acknowledgments
-
-- Built for internal use at a healthcare practice
-- Uses amazing open source tools: FastAPI, Tesseract, Presidio, spaCy
-- Powered by Anthropic's Claude for intelligent classification
-- HumbleFax for reliable fax API services
 
 ## 📞 Support
 
